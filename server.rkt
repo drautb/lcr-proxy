@@ -68,11 +68,13 @@
                (request-headers/raw req))))
 
 (define (forward-response-headers headers)
-  (filter (λ (h) 
-            (not (member (header-field h)
-                         (list #"Transfer-Encoding"
-                               #"Content-Length"))))
-          (map build-header-from-str headers)))
+  (append
+    (filter (λ (h) 
+              (not (member (header-field h)
+                           (list #"Transfer-Encoding"
+                                 #"Content-Length"))))
+            (map build-header-from-str headers)))
+  (list (header #"Access-Control-Allow-Origin" #"*")))
 
 ;; Healthcheck
 (json-get "/" (status))

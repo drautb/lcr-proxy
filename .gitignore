@@ -1,0 +1,6 @@
+run/
+.env
+*.sublime-*
+*.log
+racketapp
+*.rkt~

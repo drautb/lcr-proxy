@@ -44,6 +44,9 @@
 (define (proxy-post path handler)
   (define-handler "POST" path handler proxy-response-maker))
 
+(define (proxy-options path handler)
+  (define-handler "OPTIONS" path handler proxy-response-maker))
+
 (define (status) (λ ()
                    (log-info "Status requested.")
                    (make-hash (list (cons 'status "alive")))))
@@ -129,6 +132,20 @@
                  (list (extract-status-code status)
                        (forward-response-headers headers)
                        (port->bytes in-port))))))
+
+(proxy-options "/login.html"
+               (λ (req)
+                 (list 200
+                       (list (header #"Access-Control-Allow-Origin" #"*")
+                             (header #"Allow" #"*"))
+                       #f)))
+
+(proxy-options "/htvt/services/v1/:unit-number/members"
+               (λ (req)
+                 (list 200
+                       (list (header #"Access-Control-Allow-Origin" #"*")
+                             (header #"Allow" #"*"))
+                       #f)))
 
 (log-info "Starting server on port ~a" PORT)
 (run #:port PORT

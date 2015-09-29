@@ -70,7 +70,8 @@
 (define (forward-response-headers headers)
   (filter (λ (h) 
             (not (member (header-field h)
-                         (list #"Transfer-Encoding"))))
+                         (list #"Transfer-Encoding"
+                               #"Content-Length"))))
           (map build-header-from-str headers)))
 
 ;; Healthcheck
@@ -92,7 +93,7 @@
                                              #:data (alist->form-urlencoded
                                                       (list (cons 'username username)
                                                             (cons 'password password))))])
-                  (log-info "Login result=~a" status)
+                  (log-info "Upstream login result=~a" status)
                   (list (extract-status-code status)
                         (forward-response-headers headers)
                         (port->bytes in-port))))))
@@ -106,7 +107,7 @@
                                           "/htvt/services/v1/user/currentUser"
                                           #:ssl? #t
                                           #:headers (forward-request-headers req))])
-               (log-info "GET /htvt/services/v1/user/currentUser result=~a" status)
+               (log-info "Upstream GET /htvt/services/v1/user/currentUser result=~a" status)
                (list (extract-status-code status)
                      (forward-response-headers headers)
                      (port->bytes in-port)))))
@@ -122,7 +123,7 @@
                                             path
                                             #:ssl? #t
                                             #:headers (forward-request-headers req))])
-                 (log-info "GET ~a result=~a" path status)
+                 (log-info "Upstream GET ~a result=~a" path status)
                  (list (extract-status-code status)
                        (forward-response-headers headers)
                        (port->bytes in-port))))))

@@ -73,10 +73,13 @@
     (cond [(empty? headers) #f]
           [(regexp-match SET-COOKIE (first headers)) (first headers)]
           [else (find-set-cookie (rest headers))]))
-  (let ([cookie-attributes (if should-be-secure ";secure; path=/;" "; path=/;")])
+  (let ([cookie-attributes (if should-be-secure ";secure; path=/;" "; path=/;")]
+        [set-cookie-header (find-set-cookie headers)])
+    (unless set-cookie-header
+      (log-error "Failed to find Set-Cookie header. Headers: ~a" headers))
     (list (build-header-from-str
             (string->bytes/utf-8 
-              (string-replace (bytes->string/utf-8 (find-set-cookie headers))
+              (string-replace (bytes->string/utf-8 set-cookie-header)
                               ";secure; path=/; domain=.lds.org" cookie-attributes))))))
 
 (define (forward-request-headers req)

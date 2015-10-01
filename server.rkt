@@ -42,9 +42,6 @@
                    (log-info "Status requested.")
                    "alive"))
 
-(define (extract-status-code status)
-  (string->number (first (regexp-match #px"\\d{3}" (bytes->string/utf-8 status)))))
-
 (define (build-header-from-str header-bytes)
   (let ([pieces (string-split (bytes->string/utf-8 header-bytes) ":")])
     (header (string->bytes/utf-8 (first pieces))
@@ -54,12 +51,9 @@
   (string-append (bytes->string/utf-8 (header-field h)) ": " 
                  (bytes->string/utf-8 (header-value h))))
 
-(define (forward-request-headers req)
-  (map build-str-from-header 
-       (filter (λ (h) 
-                 (not (member (header-field h)
-                              EXCLUDED-REQUEST-HEADERS)))
-               (request-headers/raw req))))
+
+(define (extract-status-code status)
+  (string->number (first (regexp-match #px"\\d{3}" (bytes->string/utf-8 status)))))
 
 (define (extract-origin req)
   (define (find-origin headers)
@@ -68,32 +62,37 @@
           [else (find-origin (rest headers))]))
   (find-origin (request-headers/raw req)))
 
-(define (forward-response-headers headers origin)
-  (define cookie-attributes (if (regexp-match #"https" origin)
-                                ";secure; path=/;"
-                                "; path=/;"))
+(define (generate-cors-headers origin)
+  (if origin (list (header CORS-ALLOW-CREDENTIALS TRUE)
+                   (header CORS-ALLOW-ORIGIN origin))
+      '()))
+
+(define (munge-set-cookie-header headers origin)
+  (define should-be-secure (and origin (regexp-match HTTPS origin)))
   (define (find-set-cookie headers)
     (cond [(empty? headers) #f]
           [(regexp-match SET-COOKIE (first headers)) (first headers)]
           [else (find-set-cookie (rest headers))]))
-  (let ([set-cookie-header (build-header-from-str 
-                             (string->bytes/utf-8 
-                               (string-replace (bytes->string/utf-8 (find-set-cookie headers)) 
-                                               ";secure; path=/; domain=.lds.org" 
-                                               cookie-attributes)))]
-        [forwarded-headers 
-         (filter (λ (h) 
-                   (not (member (header-field h)
-                                EXCLUDED-RESPONSE-HEADERS)))
-                 (map build-header-from-str headers))])
-    (define final-headers 
-      (if origin
-          (append forwarded-headers 
-                  (list (header CORS-ALLOW-CREDENTIALS TRUE) 
-                        (header CORS-ALLOW-ORIGIN origin)
-                        set-cookie-header))
-          forwarded-headers))
-    final-headers))
+  (let ([cookie-attributes (if should-be-secure ";secure; path=/;" "; path=/;")])
+    (list (build-header-from-str
+            (string->bytes/utf-8 
+              (string-replace (bytes->string/utf-8 (find-set-cookie headers))
+                              ";secure; path=/; domain=.lds.org" cookie-attributes))))))
+
+(define (forward-request-headers req)
+  (map build-str-from-header 
+       (filter (λ (h) 
+                 (not (member (header-field h)
+                              EXCLUDED-REQUEST-HEADERS)))
+               (request-headers/raw req))))
+
+(define (forward-response-headers headers origin)
+  (append (munge-set-cookie-header headers origin)
+          (generate-cors-headers origin)
+          (filter (λ (h) 
+                    (not (member (header-field h)
+                                 EXCLUDED-RESPONSE-HEADERS)))
+                  (map build-header-from-str headers))))
 
 (define (proxy-request orig-req method url [data #f]) 
   (log-info "Making upstream request method=~a url=~a" method url)

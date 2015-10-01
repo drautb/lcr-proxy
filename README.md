@@ -9,7 +9,7 @@ At the moment, `lds.org` doesn't support CORS. I want to build a simple webpage 
 
 ### Local Testing
 
-`foreman start` will start local server.
+`racket server.rkt` will start local server.
 
 ### Deployment
 

@@ -1,13 +1,9 @@
 #lang racket
 
 (require (planet dmac/spin)
-         net/http-client
          net/uri-codec
-         web-server/servlet
-         json)
-
-(define LOGIN-URL "https://signin.lds.org/login.html")
-(define MEMBER-INFO-URL "https://www.lds.org/htvt/services/v1/' + PP6_UNIT_ID + '/members")
+         net/url
+         web-server/servlet)
 
 (define PORT
   (let ([port (environment-variables-ref (current-environment-variables) #"PORT")])
@@ -15,15 +11,16 @@
         (string->number (bytes->string/utf-8 port))
         5000)))
 
-(define (json-response-maker status headers body)
-  (response (if (eq? body #f) 404 status)
-            (status->message status)
-            (current-seconds)
-            #"application/json; charset=utf-8"
-            headers
-            (lambda (op)
-              (when body
-                (write-json (force body) op)))))
+(define ORIGIN #"Origin")
+(define HTTPS #"https")
+(define SET-COOKIE #"Set-Cookie")
+(define CORS-ALLOW-ORIGIN #"Access-Control-Allow-Origin")
+(define CORS-ALLOW-CREDENTIALS #"Access-Control-Allow-Credentials")
+(define TRUE #"true")
+(define EXCLUDED-REQUEST-HEADERS (list #"Host"))
+(define EXCLUDED-RESPONSE-HEADERS (list #"Transfer-Encoding"
+                                        #"Content-Length"
+                                        SET-COOKIE))
 
 (define (proxy-response-maker status headers body)
   (response status
@@ -35,21 +32,15 @@
               (when body
                 (write-bytes (force body) out-port)))))
 
-(define (json-get path handler)
-  (define-handler "GET" path handler json-response-maker))
-
 (define (proxy-get path handler)
   (define-handler "GET" path handler proxy-response-maker))
 
 (define (proxy-post path handler)
   (define-handler "POST" path handler proxy-response-maker))
 
-(define (proxy-options path handler)
-  (define-handler "OPTIONS" path handler proxy-response-maker))
-
 (define (status) (λ ()
                    (log-info "Status requested.")
-                   (make-hash (list (cons 'status "alive")))))
+                   "alive"))
 
 (define (extract-status-code status)
   (string->number (first (regexp-match #px"\\d{3}" (bytes->string/utf-8 status)))))
@@ -67,85 +58,80 @@
   (map build-str-from-header 
        (filter (λ (h) 
                  (not (member (header-field h)
-                              (list #"Host"))))
+                              EXCLUDED-REQUEST-HEADERS)))
                (request-headers/raw req))))
 
-(define (forward-response-headers headers)
-  (append
-    (filter (λ (h) 
-              (not (member (header-field h)
-                           (list #"Transfer-Encoding"
-                                 #"Content-Length"))))
-            (map build-header-from-str headers)))
-  (list (header #"Access-Control-Allow-Origin" #"*")))
+(define (extract-origin req)
+  (define (find-origin headers)
+    (cond [(empty? headers) #f]
+          [(equal? (header-field (first headers)) ORIGIN) (header-value (first headers))]
+          [else (find-origin (rest headers))]))
+  (find-origin (request-headers/raw req)))
+
+(define (forward-response-headers headers origin)
+  (define cookie-attributes (if (regexp-match #"https" origin)
+                                ";secure; path=/;"
+                                "; path=/;"))
+  (define (find-set-cookie headers)
+    (cond [(empty? headers) #f]
+          [(regexp-match SET-COOKIE (first headers)) (first headers)]
+          [else (find-set-cookie (rest headers))]))
+  (let ([set-cookie-header (build-header-from-str 
+                             (string->bytes/utf-8 
+                               (string-replace (bytes->string/utf-8 (find-set-cookie headers)) 
+                                               ";secure; path=/; domain=.lds.org" 
+                                               cookie-attributes)))]
+        [forwarded-headers 
+         (filter (λ (h) 
+                   (not (member (header-field h)
+                                EXCLUDED-RESPONSE-HEADERS)))
+                 (map build-header-from-str headers))])
+    (define final-headers 
+      (if origin
+          (append forwarded-headers 
+                  (list (header CORS-ALLOW-CREDENTIALS TRUE) 
+                        (header CORS-ALLOW-ORIGIN origin)
+                        set-cookie-header))
+          forwarded-headers))
+    final-headers))
+
+(define (proxy-request orig-req method url [data #f]) 
+  (log-info "Making upstream request method=~a url=~a" method url)
+  (let-values ([(status headers in-port)
+                (http-sendrecv/url (string->url url)
+                                   #:method method
+                                   #:headers (forward-request-headers orig-req)
+                                   #:data data)])
+    (log-info "Upstream response for method=~a url=~a response=~a" method url (extract-status-code status))
+    (list (extract-status-code status)
+          (forward-response-headers headers (extract-origin orig-req))
+          (port->bytes in-port))))
 
 ;; Healthcheck
-(json-get "/" (status))
-(json-get "/status" (status))
+(get "/" (status))
+(get "/status" (status))
 
 ;; Login endpoint
 (proxy-post "/login.html"
             (λ (req)
-              (let ([username (params req 'username)]
-                    [password (params req 'password)])
-                (log-info "Attempting to login. user=~a" username)
-                (let-values ([(status headers in-port) 
-                              (http-sendrecv "signin.lds.org"
-                                             "/login.html"
-                                             #:ssl? #t
-                                             #:headers (forward-request-headers req)
-                                             #:method #"POST"
-                                             #:data (alist->form-urlencoded
-                                                      (list (cons 'username username)
-                                                            (cons 'password password))))])
-                  (log-info "Upstream login result=~a" status)
-                  (list (extract-status-code status)
-                        (forward-response-headers headers)
-                        (port->bytes in-port))))))
+              (let* ([username (params req 'username)]
+                     [password (params req 'password)]
+                     [data (alist->form-urlencoded
+                             (list (cons 'username username)
+                                   (cons 'password password)))])
+                (proxy-request req #"POST" "https://signin.lds.org/login.html" data))))
 
 ;; Current user information
 (proxy-get "/htvt/services/v1/user/currentUser"
            (λ (req)
-             (log-info "GET /htvt/services/v1/user/currentUser")
-             (let-values ([(status headers in-port) 
-                           (http-sendrecv "www.lds.org"
-                                          "/htvt/services/v1/user/currentUser"
-                                          #:ssl? #t
-                                          #:headers (forward-request-headers req))])
-               (log-info "Upstream GET /htvt/services/v1/user/currentUser result=~a" status)
-               (list (extract-status-code status)
-                     (forward-response-headers headers)
-                     (port->bytes in-port)))))
+             (proxy-request req #"GET" "https://www.lds.org/htvt/services/v1/user/currentUser")))
 
 ;; Member information
 (proxy-get "/htvt/services/v1/:unit-number/members"
            (λ (req)
-             (let* ([unit-number (params req 'unit-number)]
-                    [path (string-append "/htvt/services/v1/" unit-number "/members")])
-               (log-info "GET ~a" path)
-               (let-values ([(status headers in-port) 
-                             (http-sendrecv "www.lds.org"
-                                            path
-                                            #:ssl? #t
-                                            #:headers (forward-request-headers req))])
-                 (log-info "Upstream GET ~a result=~a" path status)
-                 (list (extract-status-code status)
-                       (forward-response-headers headers)
-                       (port->bytes in-port))))))
-
-(proxy-options "/login.html"
-               (λ (req)
-                 (list 200
-                       (list (header #"Access-Control-Allow-Origin" #"*")
-                             (header #"Allow" #"*"))
-                       #f)))
-
-(proxy-options "/htvt/services/v1/:unit-number/members"
-               (λ (req)
-                 (list 200
-                       (list (header #"Access-Control-Allow-Origin" #"*")
-                             (header #"Allow" #"*"))
-                       #f)))
+             (proxy-request req #"GET"
+                            (string-append "https://www.lds.org/htvt/services/v1/"
+                                           (params req 'unit-number) "/members"))))
 
 (log-info "Starting server on port ~a" PORT)
 (run #:port PORT

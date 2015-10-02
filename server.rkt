@@ -75,12 +75,13 @@
           [else (find-set-cookie (rest headers))]))
   (let ([cookie-attributes (if should-be-secure ";secure; path=/;" "; path=/;")]
         [set-cookie-header (find-set-cookie headers)])
-    (unless set-cookie-header
-      (log-error "Failed to find Set-Cookie header. Headers: ~a" headers))
-    (list (build-header-from-str
-            (string->bytes/utf-8 
-              (string-replace (bytes->string/utf-8 set-cookie-header)
-                              ";secure; path=/; domain=.lds.org" cookie-attributes))))))
+    (if set-cookie-header
+        (list (build-header-from-str
+                (string->bytes/utf-8 
+                  (string-replace (bytes->string/utf-8 set-cookie-header)
+                                  ";secure; path=/; domain=.lds.org" cookie-attributes))))
+        (begin (log-error "Failed to find Set-Cookie header. Headers: ~a" headers) 
+               '()))))
 
 (define (forward-request-headers req)
   (map build-str-from-header 

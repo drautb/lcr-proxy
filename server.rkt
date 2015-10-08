@@ -48,7 +48,7 @@
             (string->bytes/utf-8 (string-join (rest pieces) ":")))))
 
 (define (build-str-from-header h)
-  (string-append (bytes->string/utf-8 (header-field h)) ": " 
+  (string-append (bytes->string/utf-8 (header-field h)) ": "
                  (bytes->string/utf-8 (header-value h))))
 
 
@@ -77,15 +77,15 @@
         [set-cookie-header (find-set-cookie headers)])
     (if set-cookie-header
         (list (build-header-from-str
-                (string->bytes/utf-8 
+                (string->bytes/utf-8
                   (string-replace (bytes->string/utf-8 set-cookie-header)
                                   ";secure; path=/; domain=.lds.org" cookie-attributes))))
-        (begin (log-error "Failed to find Set-Cookie header. Headers: ~a" headers) 
+        (begin (log-error "Failed to find Set-Cookie header. Headers: ~a" headers)
                '()))))
 
 (define (forward-request-headers req)
-  (map build-str-from-header 
-       (filter (λ (h) 
+  (map build-str-from-header
+       (filter (λ (h)
                  (not (member (header-field h)
                               EXCLUDED-REQUEST-HEADERS)))
                (request-headers/raw req))))
@@ -93,12 +93,12 @@
 (define (forward-response-headers headers origin)
   (append (munge-set-cookie-header headers origin)
           (generate-cors-headers origin)
-          (filter (λ (h) 
+          (filter (λ (h)
                     (not (member (header-field h)
                                  EXCLUDED-RESPONSE-HEADERS)))
                   (map build-header-from-str headers))))
 
-(define (proxy-request orig-req method url [data #f]) 
+(define (proxy-request orig-req method url [data #f])
   (log-info "Making upstream request method=~a url=~a" method url)
   (let-values ([(status headers in-port)
                 (http-sendrecv/url (string->url url)
@@ -123,6 +123,11 @@
                              (list (cons 'username username)
                                    (cons 'password password)))])
                 (proxy-request req #"POST" "https://signin.lds.org/login.html" data))))
+
+;; Logout endpoint
+(proxy-get "/SSOSignIn/logout.jsp"
+           (λ (req)
+             (proxy-request req #"GET" "https://signin.lds.org/SSOSignIn/logout.jsp")))
 
 ;; Current user information
 (proxy-get "/htvt/services/v1/user/currentUser"

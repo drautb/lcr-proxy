@@ -14,12 +14,15 @@
 (define ORIGIN #"Origin")
 (define HTTPS #"https")
 (define SET-COOKIE #"Set-Cookie")
+(define HOST #"Host")
+(define LOCATION #"Location")
 (define CORS-ALLOW-ORIGIN #"Access-Control-Allow-Origin")
 (define CORS-ALLOW-CREDENTIALS #"Access-Control-Allow-Credentials")
 (define TRUE #"true")
-(define EXCLUDED-REQUEST-HEADERS (list #"Host"))
+(define EXCLUDED-REQUEST-HEADERS (list HOST))
 (define EXCLUDED-RESPONSE-HEADERS (list #"Transfer-Encoding"
                                         #"Content-Length"
+                                        LOCATION
                                         SET-COOKIE))
 
 (define (proxy-response-maker status headers body)
@@ -55,12 +58,25 @@
 (define (extract-status-code status)
   (string->number (first (regexp-match #px"\\d{3}" (bytes->string/utf-8 status)))))
 
+(define (find-header header-name headers)
+  (cond [(empty? headers) #f]
+        [(equal? header-name (header-field (first headers))) (first headers)]
+        [else (find-header header-name (rest headers))]))
+
+(define (find-header-str header-name headers)
+  (find-header header-name (map build-header-from-str headers)))
+
 (define (extract-origin req)
-  (define (find-origin headers)
-    (cond [(empty? headers) #f]
-          [(equal? (header-field (first headers)) ORIGIN) (header-value (first headers))]
-          [else (find-origin (rest headers))]))
-  (find-origin (request-headers/raw req)))
+  (let ([origin (find-header ORIGIN (request-headers/raw req))])
+    (if origin
+        (header-value origin)
+        #f)))
+
+(define (extract-host req)
+  (let ([host (find-header HOST (request-headers/raw req))])
+    (if host
+        (header-value host)
+        #f)))
 
 (define (generate-cors-headers origin)
   (if origin (list (header CORS-ALLOW-CREDENTIALS TRUE)
@@ -77,10 +93,28 @@
         [set-cookie-header (find-set-cookie headers)])
     (if set-cookie-header
         (list (build-header-from-str
-                (string->bytes/utf-8
-                  (string-replace (bytes->string/utf-8 set-cookie-header)
-                                  ";secure; path=/; domain=.lds.org" cookie-attributes))))
+                (regexp-replace #rx";secure; path=/; domain=.lds.org"
+                                set-cookie-header
+                                cookie-attributes)))
         (begin (log-error "Failed to find Set-Cookie header. Headers: ~a" headers)
+               '()))))
+
+(define (munge-location-header headers host)
+  (define (https->http location-header)
+    (if (or (regexp-match #rx"localhost" (header-value location-header))
+            (regexp-match #rx"0\\.0\\.0\\.0" (header-value location-header)))
+        (header LOCATION (regexp-replace #rx"https://" (header-value location-header) #"http://"))
+        location-header))
+  (let ([location-header (find-header-str LOCATION headers)])
+    (if location-header
+        (list
+          (https->http
+            (build-header-from-str
+              (bytes-append LOCATION #":"
+                            (regexp-replace #px"//(\\w|\\.)*/"
+                                            (header-value location-header)
+                                            (bytes-append #"//" host #"/"))))))
+        (begin (log-warning "Failed to find Location header. (Fine if this was a 200 response) Headers: ~a" headers)
                '()))))
 
 (define (forward-request-headers req)
@@ -90,8 +124,9 @@
                               EXCLUDED-REQUEST-HEADERS)))
                (request-headers/raw req))))
 
-(define (forward-response-headers headers origin)
+(define (forward-response-headers headers origin host)
   (append (munge-set-cookie-header headers origin)
+          (munge-location-header headers host)
           (generate-cors-headers origin)
           (filter (λ (h)
                     (not (member (header-field h)
@@ -107,7 +142,9 @@
                                    #:data data)])
     (log-info "Upstream response for method=~a url=~a response=~a" method url (extract-status-code status))
     (list (extract-status-code status)
-          (forward-response-headers headers (extract-origin orig-req))
+          (forward-response-headers headers
+                                    (extract-origin orig-req)
+                                    (extract-host orig-req))
           (port->bytes in-port))))
 
 ;; Healthcheck
@@ -128,6 +165,11 @@
 (proxy-get "/SSOSignIn/logout.jsp"
            (λ (req)
              (proxy-request req #"GET" "https://signin.lds.org/SSOSignIn/logout.jsp")))
+
+;; Redirected to Login Page
+(proxy-get "/sso/UI/Login"
+           (λ (req)
+             (proxy-request req #"GET" "https://ident.lds.org/sso/UI/Login")))
 
 ;; Current user information
 (proxy-get "/htvt/services/v1/user/currentUser"
